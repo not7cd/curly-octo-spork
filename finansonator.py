@@ -1,15 +1,19 @@
 from datetime import datetime
 from getpass import getpass
 
+
+import csv
 import click
 import crayons
 import dokuwiki
 import tablib
 from jinja2 import Template
 from tabulate import tabulate
+from glom import glom
 
-from helpers import _normalize_mbank_headers, report_balance, report_date, \
-    last_balance
+from helpers import _normalize_mbank_headers, report_balance, report_date, last_balance
+
+from collections import defaultdict
 
 cli = click.Group()
 
@@ -42,12 +46,12 @@ def create_wiki_session():
         return wiki
 
 
-
 @click.option("--dry-run", "dry_run", is_flag=True)
 def post_report(wiki, dry_run, report):
     """Simple program that greets NAME for a total of COUNT times."""
     content = report_page.render(
-        title="{}.{}".format(report["year"], report["month"]), table=tabulate(list(report.items())[:-2], tablefmt="youtrack")
+        title="{}.{}".format(report["year"], report["month"]),
+        table=tabulate(list(report.items())[:-2], tablefmt="youtrack"),
     )
 
     print(content)
@@ -59,35 +63,73 @@ def post_report(wiki, dry_run, report):
         print(crayons.yellow("Would append to page {} at DokuWiki".format(WIKI_PAGE)))
 
 
+@click.group()
+@click.option("-v", "--verbose", is_flag=True)
+@click.option("-n", "--dry-run", is_flag=True)
+@click.pass_context
+def cli(ctx, verbose, dry_run):
+    ctx.obj['VERBOSE'] = verbose
+    ctx.obj['DRY_RUN'] = dry_run
+
+
+def file_export_format(file):
+    return 'csv'
+
+
+def detect_scheme(file):
+    return "mbank"
+
+
+def _normalize_float(string):
+    return float(string.strip().replace(",", ".").replace(" ", ""))
+
+
+specs = {
+    "mbank": {
+        "date": lambda r: datetime.strptime(r["#Data operacji"], "%Y-%m-%d"),
+        "amount": lambda r: _normalize_float(r["#Kwota"]),
+        "balance": lambda r: _normalize_float(r["#Saldo po operacji"])
+    }
+}
+
+
+@cli.command()
 @click.option("-i", "--input", "src", type=click.File("r"))
-@click.option("-v", "--verbose", is_flag=True, help="Enables verbose mode")
-@click.option(
-    "-n", "--dry-run", is_flag=True, help="Will print out changes without applying them"
-)
-def aggregate(src, verbose, dry_run):
-    if src is not None:
-        data = tablib.import_set(src.read(), "csv", delimiter=";")
-        data.headers = _normalize_mbank_headers(data.headers)
+@click.option("-o", "--output", "dst", type=click.File("w"))
+@click.pass_context
+def aggregate(ctx, src, dst):
+    data = []
+    src = [src]
+    for file in src:
+        print(dir(dst))
+        if file is not None:
+            scheme = detect_scheme(file)
+            spec = specs[scheme]
 
-        aggregated = {**report_balance(data), **report_date(data), "balance": last_balance(data)}
+            reader = csv.DictReader(file, delimiter=";")
+            for row in reader:
+                print(row)
+                normalized_row = glom(row, spec)
+                data.append(normalized_row)
 
-        if verbose:
-            click.echo(aggregated)
-        return aggregated
+    aggregated = defaultdict(lambda: [0, 0, 0])
 
+    for row in data:
+        revenue = row["amount"] if row["amount"] > 0 else 0
+        expenses = row["amount"] if row["amount"] < 0 else 0
+        aggregated[(row["date"].year, row["date"].month)][0] += revenue
+        aggregated[(row["date"].year, row["date"].month)][1] += expenses
+        aggregated[(row["date"].year, row["date"].month)][2] += row["amount"]
+        print(aggregated[(row["date"].year, row["date"].month)])
 
-@click.command()
-@click.option("-i", "--input", "src", type=click.File("r"))
-@click.option("-v", "--verbose", is_flag=True, help="Enables verbose mode")
-@click.option(
-    "-n", "--dry-run", is_flag=True, help="Will print out changes without applying them"
-)
-def main(src, dry_run, verbose):
-    report = aggregate(src, verbose, dry_run)
+    aggregated_dataset = tablib.Dataset()
+    aggregated_dataset.headers = ["year", "month", "revenue", "expenses", "balance"]
+    for date in aggregated:
+        aggregated_dataset.append([*date, *aggregated[date]])
 
-    wiki = create_wiki_session()
-    post_report(wiki=wiki, dry_run=dry_run, report=report)
-
+    if dst is not None:
+        print(dir(dst))
+        dst.write(aggregated_dataset.export(file_export_format(dst)))
 
 if __name__ == "__main__":
-    main()
+    cli(obj={})

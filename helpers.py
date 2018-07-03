@@ -23,7 +23,7 @@ def report_balance(data):
 
 
 def report_date(data):
-    dts = glom(data.dict, [lambda d: datetime.strptime(d["Data operacji"], '%Y-%m-%d')])
+    dts = glom(data.dict, [lambda d: datetime.strptime(d["Data operacji"], "%Y-%m-%d")])
     assert all((dt.year, dt.month) == (dts[0].year, dts[0].month) for dt in dts)
     return {"year": dts[0].year, "month": dts[0].month}
 
@@ -33,4 +33,3 @@ def last_balance(data):
 
 
 # @click.group(chain=True, invoke_without_command=True)
-
